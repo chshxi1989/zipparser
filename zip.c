@@ -9,6 +9,8 @@
 #include <stdint.h>
 #include <zlib.h>
 #include <assert.h>
+#include <sys/mman.h>
+#include <string.h>
 /*
  * Offset and length constants (java.util.zip naming convention).
  */
@@ -68,7 +70,19 @@ enum {
     CENVEM_UNIX = 3 << 8,   // the high byte of CENVEM
 };
 
-unsigned int get2LE(char* p) {
+struct ZipEntry {
+    uint32_t filenameLen;
+    uint8_t* filename;
+    uint32_t compLen;
+    uint32_t uncompLen;
+    uint32_t offset;
+    uint32_t crc32;
+    uint16_t compression;
+    uint32_t versionMadeBy;
+    uint32_t externalFileAttributes;
+};
+
+unsigned int get2LE(unsigned char* p) {
     unsigned int result = 0;
     result = *p++;
     result = result|((*p++)<<8);
@@ -83,21 +97,49 @@ unsigned int get4LE(unsigned char* p) {
     result = result|((*p++)<<24);
     return result;
 }
+void memdump(unsigned char* p, int len) {
+    int i = 0;
+    for (i = 0; i< len; i++) {
+        printf("0x%x ", *(p++));
+    }
+    printf("\n");
+}
 
-int decompress(int srcfd, uint32_t u32srcOffset, uint32_t u32srcCompLen, uint32_t u32srcUncompLen, int dstfd) {
-    long result = 0;
-    unsigned char procBuf[32 * 1024];
-    z_stream zstream;
-    int zerr;
-    // malloc buffer to store data
-    uint8_t* pBuf = (uint8_t*)malloc(u32srcCompLen);
-    lseek(srcfd, u32srcOffset, SEEK_SET);
-    if(read(srcfd, pBuf, u32srcCompLen) != u32srcCompLen) {
-        printf("failed to read data\n");
-        free(pBuf);
+int inflate_entry(struct ZipEntry* pZipEntry, uint8_t* pZipAddr, const char* dir_path) {
+    if (pZipEntry == NULL || pZipAddr == NULL) {
+        printf("pZipEntry or pZipAddr can not be NULL\n");
+        return -1;
+    }
+    if (pZipEntry->versionMadeBy&0xFF00 != CENVEM_UNIX) {
+        printf("zip file not unix stype\n");
         return -1;
     }
     
+    // construct file name
+    char filename[PATH_MAX] = "\0";
+    strcpy(filename, dir_path);
+    if (dir_path[strlen(dir_path) -1] != '/') {
+        strcat(filename, "/");
+    }
+    strncat(filename, pZipEntry->filename, pZipEntry->filenameLen);
+    printf("filename :%s\n", filename);
+    mode_t mode = pZipEntry->externalFileAttributes >> 16;
+    if (S_ISDIR(mode)) {
+        printf("object is a directory\n");
+        mkdir(filename, S_IRWXU);
+        return 0;
+    }
+    if (!S_ISREG(mode)) {
+        printf("object is not a regular file\n");
+        return -1;
+    }
+    // create new file
+    int dstfd = open(filename, O_CREAT|O_WRONLY, S_IRWXU);
+    uint32_t result = 0;
+    unsigned char procBuf[32 * 1024];
+    z_stream zstream;
+    int zerr;
+
     /*
      * Initialize the zlib stream.
      */
@@ -105,8 +147,8 @@ int decompress(int srcfd, uint32_t u32srcOffset, uint32_t u32srcCompLen, uint32_
     zstream.zalloc = Z_NULL;
     zstream.zfree = Z_NULL;
     zstream.opaque = Z_NULL;
-    zstream.next_in = pBuf;
-    zstream.avail_in = u32srcCompLen;
+    zstream.next_in = pZipAddr + pZipEntry->offset;
+    zstream.avail_in = pZipEntry->compLen;
     zstream.next_out = (Bytef*) procBuf;
     zstream.avail_out = sizeof(procBuf);
     zstream.data_type = Z_UNKNOWN;
@@ -136,7 +178,6 @@ int decompress(int srcfd, uint32_t u32srcOffset, uint32_t u32srcCompLen, uint32_
             printf("zlib inflate call failed (zerr=%d)\n", zerr);
             goto z_bail;
         }
-
         /* write when we're full or when we're done */
         if (zstream.avail_out == 0 || (zerr == Z_STREAM_END && zstream.avail_out != sizeof(procBuf))) {
             long procSize = zstream.next_out - procBuf;
@@ -146,14 +187,11 @@ int decompress(int srcfd, uint32_t u32srcOffset, uint32_t u32srcCompLen, uint32_
                 printf("Process function elected to fail (in inflate)\n");
                 goto z_bail;
             }
-
             zstream.next_out = procBuf;
             zstream.avail_out = sizeof(procBuf);
         }
     } while (zerr == Z_OK);
-
     assert(zerr == Z_STREAM_END);       /* other errors should've been caught */
-
     // success!
     result = zstream.total_out;
 
@@ -161,142 +199,119 @@ z_bail:
     inflateEnd(&zstream);        /* free up any allocated structures */
 
 bail:
-    if (result != u32srcUncompLen) {
+    if (result != pZipEntry->uncompLen) {
         if (result != -1)        // error already shown?
-            printf("Size mismatch on inflated file (%ld vs %ld)\n", result, u32srcUncompLen);
-        free(pBuf);
+            printf("Size mismatch on inflated file (0x%x vs 0x%x)\n", result, pZipEntry->uncompLen);
         return -1;
     }
-    free(pBuf);
+    close(dstfd);
     return 0;
 }
 
-void memdump(unsigned char* p, int len) {
-    int i = 0;
-    for (i = 0; i< len; i++) {
-        printf("0x%x ", *(p++));
+int checkdir(const char* dirpath) {
+    struct stat dirstat;
+    int ret = stat(dirpath, &dirstat);
+    if (ret != 0) {
+        // directory not exist, so create it
+        mkdir(dirpath, S_IRWXU);
+    } else {
+        if (!S_ISDIR(dirstat.st_mode)) {
+            printf("%s not a directory\n", dirpath);
+            return -1;
+        }
     }
-    printf("\n");
+    return 0;
 }
 
 int main(int argc, char** argv) {
-    // get file size
-    if( argc != 2) {
+    int ret = -1;
+    char* zipfile = NULL;
+    char* zipdir = NULL;
+    if (argc == 2) {
+        zipfile = argv[1];
+    } else if ((argc == 4) && (strcmp(argv[2], "-d") == 0)) {
+        zipfile = argv[1];
+        zipdir = argv[3];
+        // check zip dir
+        ret = checkdir(zipdir);
+        if (ret != 0) {
+            return -1;
+        }
+    }
+    else {
         printf("usage: zip [zipfilename]\n");
         return -1;
     }
+    #define ZIP_FILE (zipfile)
+    #define ZIP_DIR (zipdir)
     struct stat zipstat;
-    int ret = stat(argv[1], &zipstat);
+    // get file size
+    ret = stat(ZIP_FILE, &zipstat);
     if (ret != 0) {
-        printf("stat file(%s) failed, %s\n", argv[1], strerror(errno));
+        printf("stat file(%s) failed, %s\n", ZIP_FILE, strerror(errno));
         return -1;
     }
-    long zipFileLength = zipstat.st_size;
-    printf("file st mode: 0x%x\n", zipstat.st_mode);
+    uint32_t zipFileLength = zipstat.st_size;
     printf("file size: 0x%x\n", zipFileLength);
-    if (S_ISREG(zipstat.st_mode)) {
-        printf("is a regular file\n");
-    }
-    // get EOCD
-    int fd = open(argv[1], O_RDONLY);
+    // map file to dram
+    int fd = open(ZIP_FILE, O_RDONLY);
     if (fd == -1) {
-        printf("can not open %s\n", argv[1]);
+        printf("can not open %s, %s\n", ZIP_FILE, strerror(errno));
         return -1;
     }
-    unsigned char eocdBuffer[ENDHDR];
-    lseek(fd, zipFileLength - ENDHDR, SEEK_SET);
-    ret = read(fd, eocdBuffer, ENDHDR);
-    if (ret != ENDHDR) {
-        printf("read data from %s failed", argv[1]);
+    uint8_t* pZipAddr = (uint8_t*)mmap(NULL, zipFileLength, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (pZipAddr == MAP_FAILED) {
+        printf("can not map zip file %s to dram, %s\n", ZIP_FILE, strerror(errno));
         return -1;
     }
-    memdump(eocdBuffer, ENDHDR);
-    unsigned int entrynum = get2LE(eocdBuffer + ENDSUB);
-    unsigned int entryoffset = get4LE(eocdBuffer + ENDOFF);
+    // parser EOCD
+    uint8_t* pu8EocdData = pZipAddr + zipFileLength - ENDHDR;
+    // check EOCD SIG
+    if (get4LE(pu8EocdData) != ENDSIG) {
+        printf("zipfile %s not a zip format\n", ZIP_FILE);
+        ret = -1;
+        goto done;
+    }
+    uint32_t entryNum = get2LE(pu8EocdData + ENDSUB); // how many central directory in zip file
+    uint32_t entryOffset = get2LE(pu8EocdData + ENDOFF); // central directory data offset in zip file
     
-    // search central directory area
-    lseek(fd, entryoffset, SEEK_SET);
-    int i = 0;
-    unsigned char cdBuffer[CENHDR];
-    uint32_t fileNameLen = 0;
-    uint32_t extraLen = 0;
-    uint32_t fileCommentLen = 0;
-    uint32_t u32offset = entryoffset;
-    uint32_t u32fileLocalHeaderOffset = 0;
-    char nameBuffer[PATH_MAX];
-    unsigned char localFileHeaderBuffer[LOCHDR];
-    uint32_t u32fileExteralAttr = 0;
-    uint16_t u16versionMadeBy = 0;
-    int newfd = -1;
-    for(i = 0; i < entrynum; i++) {
-        printf("CD info offset: 0x%x\n", u32offset);
-        lseek(fd, u32offset, SEEK_SET);
-        read(fd, cdBuffer, CENHDR);
-        uint32_t u32sig = get4LE(cdBuffer);
-        if (u32sig != CENSIG) {
-            printf("central directory sig error: 0x%x, expert 0x%x\n", u32sig, CENSIG);
-            close(fd);
-            return -1;
+    // parser central directory
+    uint8_t* pu8CentralDirEntry = pZipAddr + entryOffset;
+    uint8_t* pu8LocalFileHeader = NULL;
+    int loop;
+    struct ZipEntry zipEntry;
+    uint32_t u32localOffset = 0;
+    for (loop = 0; loop < entryNum; loop++) {
+        // check central directory SIG
+        if (get4LE(pu8CentralDirEntry) != CENSIG) {
+            printf("central directory sig of %d not match\n", loop);
+            continue;
         }
-        fileNameLen = get2LE(cdBuffer + CENNAM);
-        extraLen = get2LE(cdBuffer + CENEXT);
-        fileCommentLen = get2LE(cdBuffer + CENCOM);
-        printf("fileNameLen: %d, extraLen: %d, fileCommentLen: %d\n", fileNameLen, extraLen, fileCommentLen);
-        if (fileNameLen > PATH_MAX) {
-            printf("file name length(0x%x) should not larger than PATH_MAX\n", fileNameLen);
-            close(fd);
-            return -1;
+        zipEntry.versionMadeBy = get2LE(pu8CentralDirEntry + CENVEM);
+        zipEntry.externalFileAttributes = get4LE(pu8CentralDirEntry + CENATX);
+        zipEntry.crc32 = get2LE(pu8CentralDirEntry + CENCRC);
+        zipEntry.filenameLen = get2LE(pu8CentralDirEntry + CENNAM);
+        zipEntry.filename = pu8CentralDirEntry + CENHDR;
+        zipEntry.compLen = get4LE(pu8CentralDirEntry + CENSIZ);
+        zipEntry.uncompLen = get4LE(pu8CentralDirEntry + CENLEN);
+        u32localOffset = get4LE(pu8CentralDirEntry + CENOFF);
+        pu8LocalFileHeader = pZipAddr + u32localOffset;
+        zipEntry.offset = u32localOffset + LOCHDR + get2LE(pu8LocalFileHeader + LOCNAM) + get2LE(pu8LocalFileHeader + LOCEXT);
+        // inflate file data
+        ret = inflate_entry(&zipEntry, pZipAddr, ZIP_DIR);
+        if( ret != 0) {
+            printf("inflate file %s failed\n", zipEntry.filename);
+            goto done;
         }
-        read(fd, nameBuffer, fileNameLen);
-        nameBuffer[fileNameLen] = '\0';
-        printf("num %d file name: %s\n", i, nameBuffer);
-        u16versionMadeBy = get2LE(cdBuffer + CENVEM);
-        // check if unix file
-        if (u16versionMadeBy&0xFF00 != CENVEM_UNIX) {
-            printf("file not unix style\n");
-            return -1;
-        }
-        u32fileExteralAttr = get4LE(cdBuffer + CENATX);
-        // seek next central directory
-        u32offset += CENHDR + fileNameLen + extraLen + fileCommentLen;
-        
-        // get file local header
-        u32fileLocalHeaderOffset = get4LE(cdBuffer + CENOFF);
-        lseek(fd, u32fileLocalHeaderOffset, SEEK_SET);
-        read(fd, localFileHeaderBuffer, LOCHDR);
-        u32sig =  get4LE(localFileHeaderBuffer);
-        if (u32sig != LOCSIG) {
-            printf("local file header sig error: 0x%x, expert 0x%x\n", u32sig, LOCSIG);
-            close(fd);
-            return -1;
-        }
-        // get file data
-        uint32_t u32compLen = get4LE(localFileHeaderBuffer+LOCSIZ);
-        uint32_t u32uncompLen = get4LE(localFileHeaderBuffer+LOCLEN);
-        uint32_t u32dataOffset = u32fileLocalHeaderOffset + LOCHDR + get2LE(localFileHeaderBuffer+LOCNAM) + get2LE(localFileHeaderBuffer+LOCEXT);
-        uint8_t u8compType = get2LE(localFileHeaderBuffer+LOCHOW);
-        printf("u32fileExteralAttr: 0x%x\n", u32fileExteralAttr);
-        if (S_ISDIR(u32fileExteralAttr >> 16)) {
-            // file is a direcotry
-            printf("object is a directory\n");
-            mkdir(nameBuffer, S_IRUSR|S_IWUSR|S_IXUSR);
-        } else if (S_ISREG(u32fileExteralAttr >> 16)) {
-            // object is a regular file
-            printf("object is a regular file\n");
-            newfd = open(nameBuffer, O_RDWR|O_CREAT, S_IRUSR|S_IWUSR|S_IXUSR);
-            // decompress data
-            if (u8compType == STORED) {
-                // data not compress
-            } else if (u8compType == DEFLATED) {
-                // deflate compress
-                ret = decompress(fd, u32dataOffset, u32compLen, u32uncompLen, newfd);
-                if (ret != 0) {
-                    printf("data decompress failed\n");
-                }
-            }
-            close(newfd);
-        }
+        pu8CentralDirEntry += CENHDR + zipEntry.filenameLen + get2LE(pu8CentralDirEntry + CENEXT)+ get2LE(pu8CentralDirEntry + CENCOM);
     }
+done:
+    munmap(pZipAddr, zipFileLength);
     close(fd);
-    return 0;
+    if (ret != 0) {
+        return -1;
+    } else {
+        printf("inflate zip file ok\n");
+        return 0;
+    }
 }
