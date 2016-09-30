@@ -11,76 +11,9 @@
 #include <assert.h>
 #include <sys/mman.h>
 #include <string.h>
-/*
- * Offset and length constants (java.util.zip naming convention).
- */
-
-enum {
-    CENSIG = 0x02014b50,      // PK12 , central directory header, describe file entry
-    CENHDR = 46,
-
-    CENVEM =  4,
-    CENVER =  6,
-    CENFLG =  8,
-    CENHOW = 10,
-    CENTIM = 12,
-    CENCRC = 16,
-    CENSIZ = 20,
-    CENLEN = 24,
-    CENNAM = 28,
-    CENEXT = 30,
-    CENCOM = 32,
-    CENDSK = 34,
-    CENATT = 36,
-    CENATX = 38,
-    CENOFF = 42,
-
-    ENDSIG = 0x06054b50,     // PK56 , EOCD, end of central directory
-    ENDHDR = 22,
-
-    ENDSUB =  8,             // central directory num
-    ENDTOT = 10,
-    ENDSIZ = 12,
-    ENDOFF = 16,             // central directory offset
-    ENDCOM = 20,
-
-    EXTSIG = 0x08074b50,     // PK78, external data, no exist commonly
-    EXTHDR = 16,
-
-    EXTCRC =  4,
-    EXTSIZ =  8,
-    EXTLEN = 12,
-
-    LOCSIG = 0x04034b50,      // PK34, local file header
-    LOCHDR = 30,
-
-    LOCVER =  4,
-    LOCFLG =  6,
-    LOCHOW =  8,
-    LOCTIM = 10,
-    LOCCRC = 14,
-    LOCSIZ = 18,
-    LOCLEN = 22,
-    LOCNAM = 26,
-    LOCEXT = 28,
-
-    STORED = 0,
-    DEFLATED = 8,
-
-    CENVEM_UNIX = 3 << 8,   // the high byte of CENVEM
-};
-
-struct ZipEntry {
-    uint32_t filenameLen;
-    uint8_t* filename;
-    uint32_t compLen;
-    uint32_t uncompLen;
-    uint32_t offset;
-    uint32_t crc32;
-    uint16_t compression;
-    uint32_t versionMadeBy;
-    uint32_t externalFileAttributes;
-};
+#include <getopt.h>
+#include "zip.h"
+#include "hashtable.h"
 
 unsigned int get2LE(unsigned char* p) {
     unsigned int result = 0;
@@ -117,9 +50,12 @@ int inflate_entry(struct ZipEntry* pZipEntry, uint8_t* pZipAddr, const char* dir
     
     // construct file name
     char filename[PATH_MAX] = "\0";
-    strcpy(filename, dir_path);
-    if (dir_path[strlen(dir_path) -1] != '/') {
-        strcat(filename, "/");
+    if (dir_path != NULL)
+    {
+        strcpy(filename, dir_path);
+        if (dir_path[strlen(dir_path) -1] != '/') {
+            strcat(filename, "/");
+        }
     }
     strncat(filename, pZipEntry->filename, pZipEntry->filenameLen);
     printf("filename :%s\n", filename);
@@ -223,52 +159,95 @@ int checkdir(const char* dirpath) {
     return 0;
 }
 
+void print_usage()
+{
+    printf("zip [-f zipfile] [-d dir] -l\n");
+}
+
+void print_entry(char* zipfile, struct ZipEntry* pZipEntry, int entry_num)
+{
+    printf("Archive:  %s\n", zipfile);
+    printf("  Length   Name\n");
+    printf("---------  ----\n");
+    int loop = 0;
+    int i = 0;
+    for(loop = 0; loop < entry_num; loop++)
+    {
+        printf("%9d", pZipEntry->uncompLen);
+        for(i = 0; i< pZipEntry->filenameLen; i++)
+        {
+            printf("%c", pZipEntry->filename + i);
+        }
+        printf("\n");
+        pZipEntry++;
+    }
+}
+
 int main(int argc, char** argv) {
     int ret = -1;
+    int list_flag = -1;
     char* zipfile = NULL;
     char* zipdir = NULL;
-    if (argc == 2) {
-        zipfile = argv[1];
-    } else if ((argc == 4) && (strcmp(argv[2], "-d") == 0)) {
-        zipfile = argv[1];
-        zipdir = argv[3];
-        // check zip dir
+    while ((ret = getopt(argc, argv, "ld:f:")) != -1)
+    {
+        printf("%c\n", ret);
+        switch(ret)
+        {
+            case 'l':
+                list_flag = 1;
+                break;
+            case 'd':
+                zipdir = optarg;
+                break;
+            case 'f':
+                zipfile = optarg;
+                break;
+            default: 
+                printf("unknow option %c\n", ret);
+                print_usage();
+                return -1;
+                break;
+        }
+    }
+    if (zipfile == NULL)
+    {
+        printf("zip file can not be None\n");
+        print_usage();
+        return -1;
+    }
+    if (zipdir != NULL)
+    {
         ret = checkdir(zipdir);
-        if (ret != 0) {
+        if (ret != 0)
+        {
             return -1;
         }
     }
-    else {
-        printf("usage: zip [zipfilename]\n");
-        return -1;
-    }
-    #define ZIP_FILE (zipfile)
-    #define ZIP_DIR (zipdir)
     struct stat zipstat;
     // get file size
-    ret = stat(ZIP_FILE, &zipstat);
+    ret = stat(zipfile, &zipstat);
     if (ret != 0) {
-        printf("stat file(%s) failed, %s\n", ZIP_FILE, strerror(errno));
+        printf("stat file(%s) failed, %s\n", zipfile, strerror(errno));
         return -1;
     }
     uint32_t zipFileLength = zipstat.st_size;
     printf("file size: 0x%x\n", zipFileLength);
     // map file to dram
-    int fd = open(ZIP_FILE, O_RDONLY);
+    int fd = open(zipfile, O_RDONLY);
     if (fd == -1) {
-        printf("can not open %s, %s\n", ZIP_FILE, strerror(errno));
+        printf("can not open %s, %s\n", zipfile, strerror(errno));
         return -1;
     }
     uint8_t* pZipAddr = (uint8_t*)mmap(NULL, zipFileLength, PROT_READ, MAP_PRIVATE, fd, 0);
     if (pZipAddr == MAP_FAILED) {
-        printf("can not map zip file %s to dram, %s\n", ZIP_FILE, strerror(errno));
+        printf("can not map zip file %s to dram, %s\n", zipfile, strerror(errno));
         return -1;
     }
     // parser EOCD
     uint8_t* pu8EocdData = pZipAddr + zipFileLength - ENDHDR;
     // check EOCD SIG
     if (get4LE(pu8EocdData) != ENDSIG) {
-        printf("zipfile %s not a zip format\n", ZIP_FILE);
+        printf("zipfile %s not a zip format\n", zipfile);
         ret = -1;
         goto done;
     }
@@ -281,6 +260,8 @@ int main(int argc, char** argv) {
     int loop;
     struct ZipEntry zipEntry;
     uint32_t u32localOffset = 0;
+    // create hash table
+    hashtable_init();
     for (loop = 0; loop < entryNum; loop++) {
         // check central directory SIG
         if (get4LE(pu8CentralDirEntry) != CENSIG) {
@@ -297,13 +278,29 @@ int main(int argc, char** argv) {
         u32localOffset = get4LE(pu8CentralDirEntry + CENOFF);
         pu8LocalFileHeader = pZipAddr + u32localOffset;
         zipEntry.offset = u32localOffset + LOCHDR + get2LE(pu8LocalFileHeader + LOCNAM) + get2LE(pu8LocalFileHeader + LOCEXT);
-        // inflate file data
-        ret = inflate_entry(&zipEntry, pZipAddr, ZIP_DIR);
-        if( ret != 0) {
-            printf("inflate file %s failed\n", zipEntry.filename);
-            goto done;
-        }
         pu8CentralDirEntry += CENHDR + zipEntry.filenameLen + get2LE(pu8CentralDirEntry + CENEXT)+ get2LE(pu8CentralDirEntry + CENCOM);
+        // hash table insert
+        hashtable_insert(&zipEntry);
+    }
+
+    struct ZipEntry* pZipEntry = hashtable_get();
+    int hash_num = hashtable_getsize();
+    if (list_flag == 1)
+    {
+        // print file info in zip file
+        print_entry(zipfile, pZipEntry, hash_num);
+    }
+    else
+    {
+        // inflate file data
+        for(loop = 0; loop < hash_num; loop++)
+        {
+            ret = inflate_entry(pZipEntry + loop, pZipAddr, zipdir);
+            if( ret != 0) {
+                printf("inflate file %s failed\n", zipEntry.filename);
+                goto done;
+            }
+        }
     }
 done:
     munmap(pZipAddr, zipFileLength);

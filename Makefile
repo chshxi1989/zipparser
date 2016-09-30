@@ -1,3 +1,4 @@
 all:
 	gcc -c zip.c -o zip.o
-	gcc zip.o -lz -o zip
+	gcc -c hashtable.c -o hashtable.o
+	gcc zip.o hashtable.o -lz -o zip
