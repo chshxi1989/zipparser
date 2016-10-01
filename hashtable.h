@@ -7,6 +7,7 @@
 #ifndef _HASHTABLE_H_
 #define _HASHTABLE_H_
 int hashtable_init();
+int hashtable_destory();
 int hashtable_insert(struct ZipEntry* pZipEntry);
 int hashtable_getsize();
 struct ZipEntry* hashtable_get();

@@ -67,7 +67,7 @@ enum {
 
 struct ZipEntry {
     uint32_t filenameLen;
-    uint8_t* filename;
+    char* filename;
     uint32_t compLen;
     uint32_t uncompLen;
     uint32_t offset;

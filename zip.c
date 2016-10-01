@@ -4,7 +4,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <linux/limits.h>
+#include <limits.h>
 #include <errno.h>
 #include <stdint.h>
 #include <zlib.h>
@@ -14,6 +14,7 @@
 #include <getopt.h>
 #include "zip.h"
 #include "hashtable.h"
+#include "debug_msg.h"
 
 unsigned int get2LE(unsigned char* p) {
     unsigned int result = 0;
@@ -43,7 +44,7 @@ int inflate_entry(struct ZipEntry* pZipEntry, uint8_t* pZipAddr, const char* dir
         printf("pZipEntry or pZipAddr can not be NULL\n");
         return -1;
     }
-    if (pZipEntry->versionMadeBy&0xFF00 != CENVEM_UNIX) {
+    if ((pZipEntry->versionMadeBy&0xFF00) != CENVEM_UNIX) {
         printf("zip file not unix stype\n");
         return -1;
     }
@@ -58,7 +59,7 @@ int inflate_entry(struct ZipEntry* pZipEntry, uint8_t* pZipAddr, const char* dir
         }
     }
     strncat(filename, pZipEntry->filename, pZipEntry->filenameLen);
-    printf("filename :%s\n", filename);
+    DEBUG("filename :%s\n", filename);
     mode_t mode = pZipEntry->externalFileAttributes >> 16;
     if (S_ISDIR(mode)) {
         printf("object is a directory\n");
@@ -173,10 +174,10 @@ void print_entry(char* zipfile, struct ZipEntry* pZipEntry, int entry_num)
     int i = 0;
     for(loop = 0; loop < entry_num; loop++)
     {
-        printf("%9d", pZipEntry->uncompLen);
+        printf("%9d  ", pZipEntry->uncompLen);
         for(i = 0; i< pZipEntry->filenameLen; i++)
         {
-            printf("%c", pZipEntry->filename + i);
+            printf("%c", *(pZipEntry->filename + i));
         }
         printf("\n");
         pZipEntry++;
@@ -190,7 +191,7 @@ int main(int argc, char** argv) {
     char* zipdir = NULL;
     while ((ret = getopt(argc, argv, "ld:f:")) != -1)
     {
-        printf("%c\n", ret);
+        DEBUG("%c\n", ret);
         switch(ret)
         {
             case 'l':
@@ -231,7 +232,7 @@ int main(int argc, char** argv) {
         return -1;
     }
     uint32_t zipFileLength = zipstat.st_size;
-    printf("file size: 0x%x\n", zipFileLength);
+    DEBUG("file size: 0x%x\n", zipFileLength);
     // map file to dram
     int fd = open(zipfile, O_RDONLY);
     if (fd == -1) {
@@ -272,7 +273,7 @@ int main(int argc, char** argv) {
         zipEntry.externalFileAttributes = get4LE(pu8CentralDirEntry + CENATX);
         zipEntry.crc32 = get2LE(pu8CentralDirEntry + CENCRC);
         zipEntry.filenameLen = get2LE(pu8CentralDirEntry + CENNAM);
-        zipEntry.filename = pu8CentralDirEntry + CENHDR;
+        zipEntry.filename = (char*)pu8CentralDirEntry + CENHDR;
         zipEntry.compLen = get4LE(pu8CentralDirEntry + CENSIZ);
         zipEntry.uncompLen = get4LE(pu8CentralDirEntry + CENLEN);
         u32localOffset = get4LE(pu8CentralDirEntry + CENOFF);
@@ -301,14 +302,15 @@ int main(int argc, char** argv) {
                 goto done;
             }
         }
+        printf("inflate zip file ok\n");
     }
 done:
+    hashtable_destory();
     munmap(pZipAddr, zipFileLength);
     close(fd);
     if (ret != 0) {
         return -1;
     } else {
-        printf("inflate zip file ok\n");
         return 0;
     }
 }
