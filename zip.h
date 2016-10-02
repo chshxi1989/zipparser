@@ -19,6 +19,7 @@ enum {
     CENFLG =  8,
     CENHOW = 10,
     CENTIM = 12,
+    CENDAT = 14,
     CENCRC = 16,
     CENSIZ = 20,
     CENLEN = 24,
@@ -75,5 +76,7 @@ struct ZipEntry {
     uint16_t compression;
     uint32_t versionMadeBy;
     uint32_t externalFileAttributes;
+    uint16_t modifyTime;
+    uint16_t modifyData;
 };
 #endif

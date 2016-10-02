@@ -12,6 +12,7 @@
 #include <sys/mman.h>
 #include <string.h>
 #include <getopt.h>
+#include <time.h>
 #include "zip.h"
 #include "hashtable.h"
 #include "debug_msg.h"
@@ -279,6 +280,10 @@ int main(int argc, char** argv) {
         u32localOffset = get4LE(pu8CentralDirEntry + CENOFF);
         pu8LocalFileHeader = pZipAddr + u32localOffset;
         zipEntry.offset = u32localOffset + LOCHDR + get2LE(pu8LocalFileHeader + LOCNAM) + get2LE(pu8LocalFileHeader + LOCEXT);
+        zipEntry.modifyTime = get2LE(pu8CentralDirEntry + CENTIM);
+        zipEntry.modifyData = get2LE(pu8CentralDirEntry + CENDAT);
+        printf("time: %d, %d, %d\n", (zipEntry.modifyTime>>12)&0x1F, (zipEntry.modifyTime>>5)&0x3F, (zipEntry.modifyTime<<1)&0x1F);
+        printf("data: %d-%02d-%02d\n", ((zipEntry.modifyData>>9)&0x3F)+1980, (zipEntry.modifyData>>5)&0x0F, (zipEntry.modifyData)&0x1F);
         pu8CentralDirEntry += CENHDR + zipEntry.filenameLen + get2LE(pu8CentralDirEntry + CENEXT)+ get2LE(pu8CentralDirEntry + CENCOM);
         // hash table insert
         hashtable_insert(&zipEntry);
