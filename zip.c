@@ -179,7 +179,7 @@ void print_entry(char* zipfile, struct ZipEntry* pZipEntry, int entry_num)
         file_size_total += pZipEntry->uncompLen;
         printf("%9d  ", pZipEntry->uncompLen);
         printf("%04d-%02d-%02d ", ((pZipEntry->modifyData>>9)&0x3F)+1980, (pZipEntry->modifyData>>5)&0x0F, (pZipEntry->modifyData)&0x1F);
-        printf("%02d-%02d   ", (pZipEntry->modifyTime>>11)&0x1F, (pZipEntry->modifyTime>>5)&0x3F);
+        printf("%02d:%02d   ", (pZipEntry->modifyTime>>11)&0x1F, (pZipEntry->modifyTime>>5)&0x3F);
         for(i = 0; i< pZipEntry->filenameLen; i++)
         {
             printf("%c", *(pZipEntry->filename + i));
