@@ -169,13 +169,17 @@ void print_usage()
 void print_entry(char* zipfile, struct ZipEntry* pZipEntry, int entry_num)
 {
     printf("Archive:  %s\n", zipfile);
-    printf("  Length   Name\n");
-    printf("---------  ----\n");
+    printf("  Length      Date    Time    Name\n");
+    printf("---------  ---------- -----   ----\n");
     int loop = 0;
     int i = 0;
+    int file_size_total = 0;
     for(loop = 0; loop < entry_num; loop++)
     {
+        file_size_total += pZipEntry->uncompLen;
         printf("%9d  ", pZipEntry->uncompLen);
+        printf("%04d-%02d-%02d ", ((pZipEntry->modifyData>>9)&0x3F)+1980, (pZipEntry->modifyData>>5)&0x0F, (pZipEntry->modifyData)&0x1F);
+        printf("%02d-%02d   ", (pZipEntry->modifyTime>>11)&0x1F, (pZipEntry->modifyTime>>5)&0x3F);
         for(i = 0; i< pZipEntry->filenameLen; i++)
         {
             printf("%c", *(pZipEntry->filename + i));
@@ -183,6 +187,8 @@ void print_entry(char* zipfile, struct ZipEntry* pZipEntry, int entry_num)
         printf("\n");
         pZipEntry++;
     }
+    printf("---------                     -------\n");
+    printf("%9d                     %d files\n", file_size_total, entry_num);
 }
 
 int main(int argc, char** argv) {
@@ -282,8 +288,6 @@ int main(int argc, char** argv) {
         zipEntry.offset = u32localOffset + LOCHDR + get2LE(pu8LocalFileHeader + LOCNAM) + get2LE(pu8LocalFileHeader + LOCEXT);
         zipEntry.modifyTime = get2LE(pu8CentralDirEntry + CENTIM);
         zipEntry.modifyData = get2LE(pu8CentralDirEntry + CENDAT);
-        printf("time: %d, %d, %d\n", (zipEntry.modifyTime>>12)&0x1F, (zipEntry.modifyTime>>5)&0x3F, (zipEntry.modifyTime<<1)&0x1F);
-        printf("data: %d-%02d-%02d\n", ((zipEntry.modifyData>>9)&0x3F)+1980, (zipEntry.modifyData>>5)&0x0F, (zipEntry.modifyData)&0x1F);
         pu8CentralDirEntry += CENHDR + zipEntry.filenameLen + get2LE(pu8CentralDirEntry + CENEXT)+ get2LE(pu8CentralDirEntry + CENCOM);
         // hash table insert
         hashtable_insert(&zipEntry);
