@@ -13,9 +13,11 @@
 #include <string.h>
 #include <getopt.h>
 #include <time.h>
+#include <stdbool.h>
 #include "zip.h"
 #include "hashtable.h"
 #include "debug_msg.h"
+#include "crc32.h"
 
 unsigned int get2LE(unsigned char* p) {
     unsigned int result = 0;
@@ -32,12 +34,83 @@ unsigned int get4LE(unsigned char* p) {
     result = result|((*p++)<<24);
     return result;
 }
+
 void memdump(unsigned char* p, int len) {
     int i = 0;
     for (i = 0; i< len; i++) {
         printf("0x%x ", *(p++));
     }
     printf("\n");
+}
+
+int cal_entry_crc32(struct ZipEntry* pZipEntry, uint8_t* pZipAddr, uint32_t* pcrc32_value) {
+    uint32_t result = 0;
+    unsigned char procBuf[32 * 1024];
+    z_stream zstream;
+    int zerr;
+    *pcrc32_value = 0;
+
+    /*
+     * Initialize the zlib stream.
+     */
+    memset(&zstream, 0, sizeof(zstream));
+    zstream.zalloc = Z_NULL;
+    zstream.zfree = Z_NULL;
+    zstream.opaque = Z_NULL;
+    zstream.next_in = pZipAddr + pZipEntry->offset;
+    zstream.avail_in = pZipEntry->compLen;
+    zstream.next_out = (Bytef*) procBuf;
+    zstream.avail_out = sizeof(procBuf);
+    zstream.data_type = Z_UNKNOWN;
+
+    /*
+     * Use the undocumented "negative window bits" feature to tell zlib
+     * that there's no zlib header waiting for it.
+     */
+    zerr = inflateInit2(&zstream, -MAX_WBITS);
+    if (zerr != Z_OK) {
+        if (zerr == Z_VERSION_ERROR) {
+            printf("Installed zlib is not compatible with linked version (%s)\n",
+                ZLIB_VERSION);
+        } else {
+            printf("Call to inflateInit2 failed (zerr=%d)\n", zerr);
+        }
+        goto bail;
+    }
+
+    /*
+     * Loop while we have data.
+     */
+    do {
+        /* uncompress the data */
+        zerr = inflate(&zstream, Z_NO_FLUSH);
+        if (zerr != Z_OK && zerr != Z_STREAM_END) {
+            printf("zlib inflate call failed (zerr=%d)\n", zerr);
+            goto z_bail;
+        }
+        /* write when we're full or when we're done */
+        if (zstream.avail_out == 0 || (zerr == Z_STREAM_END && zstream.avail_out != sizeof(procBuf))) {
+            long procSize = zstream.next_out - procBuf;
+            //printf("+++ processing %d bytes\n", (int) procSize);
+            *pcrc32_value = cal_crc32(*pcrc32_value, procBuf, procSize);
+            zstream.next_out = procBuf;
+            zstream.avail_out = sizeof(procBuf);
+        }
+    } while (zerr == Z_OK);
+    assert(zerr == Z_STREAM_END);       /* other errors should've been caught */
+    // success!
+    result = zstream.total_out;
+
+z_bail:
+    inflateEnd(&zstream);        /* free up any allocated structures */
+
+bail:
+    if (result != pZipEntry->uncompLen) {
+        if (result != -1)        // error already shown?
+            printf("Size mismatch on inflated file (0x%x vs 0x%x)\n", result, pZipEntry->uncompLen);
+        return -1;
+    }
+    return 0;
 }
 
 int inflate_entry(struct ZipEntry* pZipEntry, uint8_t* pZipAddr, const char* dir_path) {
@@ -191,24 +264,73 @@ void print_entry(char* zipfile, struct ZipEntry* pZipEntry, int entry_num)
     printf("%9d                     %d files\n", file_size_total, entry_num);
 }
 
+void test_entry(char* zipfile, struct ZipEntry* pZipEntry, int entry_num, uint8_t* pZipAddr)
+{
+    printf("Archive:  %s\n", zipfile);
+    int loop = 0;
+    int i = 0;
+    uint32_t crc32_value = 0;
+    bool errflag = false;
+    for(loop = 0; loop < entry_num; loop++)
+    {
+        printf("    testing: ");
+        for(i = 0; i< pZipEntry->filenameLen; i++)
+        {
+            printf("%c", *(pZipEntry->filename + i));
+        }
+        
+        // if directory
+        if ((S_ISDIR(pZipEntry->externalFileAttributes >> 16)) && (pZipEntry->crc32 == 0))
+        {
+            printf(" OK\n");
+            pZipEntry++;
+            continue;
+        }
+        
+        // inflate file
+        cal_entry_crc32(pZipEntry, pZipAddr, &crc32_value);
+        // check crc32 value
+        if (crc32_value == pZipEntry->crc32)
+        {
+            printf(" OK\n");
+        }
+        else
+        {
+            printf("crc value: 0x%x\n", crc32_value);
+            printf("pZipEntry->crc32: 0x%x\n", pZipEntry->crc32);
+            printf("Error\n");
+            errflag = true;
+        }
+        pZipEntry++;
+    }
+    if (!errflag)
+    {
+        printf("No errors detected in compressed data of %s\n", zipfile);
+    }
+}
+
 int main(int argc, char** argv) {
     int ret = -1;
-    int list_flag = -1;
+    bool list_flag = false;
+    bool test_flag = true;
     char* zipfile = NULL;
     char* zipdir = NULL;
-    while ((ret = getopt(argc, argv, "ld:f:")) != -1)
+    while ((ret = getopt(argc, argv, "ld:f:t")) != -1)
     {
         DEBUG("%c\n", ret);
         switch(ret)
         {
             case 'l':
-                list_flag = 1;
+                list_flag = true;
                 break;
             case 'd':
                 zipdir = optarg;
                 break;
             case 'f':
                 zipfile = optarg;
+                break;
+            case 't':
+                test_flag = true;
                 break;
             default: 
                 printf("unknow option %c\n", ret);
@@ -278,7 +400,7 @@ int main(int argc, char** argv) {
         }
         zipEntry.versionMadeBy = get2LE(pu8CentralDirEntry + CENVEM);
         zipEntry.externalFileAttributes = get4LE(pu8CentralDirEntry + CENATX);
-        zipEntry.crc32 = get2LE(pu8CentralDirEntry + CENCRC);
+        zipEntry.crc32 = get4LE(pu8CentralDirEntry + CENCRC);
         zipEntry.filenameLen = get2LE(pu8CentralDirEntry + CENNAM);
         zipEntry.filename = (char*)pu8CentralDirEntry + CENHDR;
         zipEntry.compLen = get4LE(pu8CentralDirEntry + CENSIZ);
@@ -295,14 +417,18 @@ int main(int argc, char** argv) {
 
     struct ZipEntry* pZipEntry = hashtable_get();
     int hash_num = hashtable_getsize();
-    if (list_flag == 1)
+    if (list_flag)
     {
         // print file info in zip file
         print_entry(zipfile, pZipEntry, hash_num);
     }
+    else if (test_flag)
+    {
+        test_entry(zipfile, pZipEntry, hash_num, pZipAddr);
+    }
     else
     {
-        // inflate file data
+        // inflate zip file
         for(loop = 0; loop < hash_num; loop++)
         {
             ret = inflate_entry(pZipEntry + loop, pZipAddr, zipdir);
