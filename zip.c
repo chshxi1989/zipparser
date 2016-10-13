@@ -16,32 +16,8 @@
 #include <stdbool.h>
 #include "zip.h"
 #include "hashtable.h"
-#include "debug_msg.h"
+#include "util.h"
 #include "crc32.h"
-
-unsigned int get2LE(unsigned char* p) {
-    unsigned int result = 0;
-    result = *p++;
-    result = result|((*p++)<<8);
-    return result;
-}
-
-unsigned int get4LE(unsigned char* p) {
-    unsigned int result = 0;
-    result = *p++;
-    result = result|((*p++)<<8);
-    result = result|((*p++)<<16);
-    result = result|((*p++)<<24);
-    return result;
-}
-
-void memdump(unsigned char* p, int len) {
-    int i = 0;
-    for (i = 0; i< len; i++) {
-        printf("0x%x ", *(p++));
-    }
-    printf("\n");
-}
 
 int cal_entry_crc32(struct ZipEntry* pZipEntry, uint8_t* pZipAddr, uint32_t* pcrc32_value) {
     uint32_t result = 0;

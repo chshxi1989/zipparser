@@ -10,4 +10,5 @@ all:
 	gcc -Wall $(LOCAL_COMPILE_FLAG) -c zip.c -o zip.o
 	gcc -Wall $(LOCAL_COMPILE_FLAG) -c hashtable.c -o hashtable.o
 	gcc -Wall $(LOCAL_COMPILE_FLAG) -c crc32.c -o crc32.o
-	gcc -Wall zip.o hashtable.o crc32.o -lz -o zip
+	gcc -Wall $(LOCAL_COMPILE_FLAG) -c util.c -o util.o
+	gcc -Wall hashtable.o crc32.o util.o zip.o -lz -o zip
