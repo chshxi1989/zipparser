@@ -283,6 +283,10 @@ void test_entry(char* zipfile, struct ZipEntry* pZipEntry, int entry_num, uint8_
     {
         printf("No errors detected in compressed data of %s\n", zipfile);
     }
+    else
+    {
+        printf("Errors detected in compressed data of %s\n", zipfile);
+    }
 }
 
 int main(int argc, char** argv) {
